@@ -1,4 +1,58 @@
 #!/usr/bin/make -f
+#export DH_VERBOSE = 1
+
+OUTJS=out/emscripten/Release
+
+# remove some flags
+export DEB_BUILD_MAINT_OPTIONS=hardening=+all
+JSFLAGS=hardening=-fortify,-stackprotector,-branch,-bindnow,-stackclash
+
+JSCPPFLAGS:=$(shell DEB_BUILD_MAINT_OPTIONS=$(JSFLAGS) dpkg-buildflags --get CPPFLAGS)
+JSCFLAGS:=$(shell DEB_BUILD_MAINT_OPTIONS=$(JSFLAGS) dpkg-buildflags --get CFLAGS) $(CPPFLAGS)
+JSCXXFLAGS:=$(shell DEB_BUILD_MAINT_OPTIONS=$(JSFLAGS) dpkg-buildflags --get CXXFLAGS) $(CPPFLAGS)
+JSLDFLAGS:=$(shell DEB_BUILD_MAINT_OPTIONS=$(JSFLAGS) dpkg-buildflags --get LDFLAGS)
+
+WABT_TOOLS:=wasm2c wasm2wat wat2wasm wasm-decompile wasm-interp wasm-objdump wasm-opcodecnt wasm-strip wasm-validate
 
 %:
-	dh $@
+	dh $@ --buildsystem=cmake
+
+override_dh_auto_configure:
+	dh_auto_configure -- \
+		-DBUILD_TESTS=OFF
+	mkdir -p $(OUTJS)
+#disable some hardening flags
+	 cd $(OUTJS) && \
+	 CFLAGS='$(JSCFLAGS)' \
+	 CXXFLAGS='$(JSCXXFLAGS)' \
+	 LDFLAGS='$(JSLDFLAGS)' \
+	 CPPFLAGS='$(JSCPPFLAGS)' \
+		cmake -G Ninja -S ../../.. \
+			-B . \
+			-DCMAKE_TOOLCHAIN_FILE=/usr/share/emscripten/cmake/Modules/Platform/Emscripten.cmake \
+			-DCMAKE_BUILD_TYPE=Release \
+			-DBUILD_TESTS=OFF \
+			-DCMAKE_VERBOSE_MAKEFILE=ON
+
+execute_before_dh_auto_build:
+	cd $(OUTJS) && \
+	CFLAGS='$(JSCFLAGS)' \
+	CXXFLAGS='$(JSCXXFLAGS)' \
+	LDFLAGS='$(JSLDFLAGS)' \
+	CPPFLAGS='$(JSCPPFLAGS)' \
+		ninja -v
+	cp $(OUTJS)/libwabt.js node-wabt-js/index.js
+#	mkdir node-wabt-js/bin
+#	set -e ; for tool in $(WABT_TOOLS); do \
+#		echo '#!/usr/bin/env node' > "node-wabt-js/bin/$$tool"; \
+#		cat "$(OUTJS)/$$tool.js" >> "node-wabt-js/bin/$$tool"; \
+#		chmod +x "node-wabt-js/bin/$$tool"; \
+#	done
+
+execute_after_dh_auto_install:
+	dh_auto_install --buildsystem=nodejs
+
+execute_after_dh_installdocs:
+	mv debian/wabt.docs debian/_docs
+	dh_nodejs_autodocs autodispatch
+	mv debian/_docs debian/wabt.docs

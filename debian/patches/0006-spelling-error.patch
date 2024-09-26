@@ -1,0 +1,16 @@
+Description: Spelling error
+Author: Yadd <yadd@debian.org>
+Forwarded: no
+Last-Update: 2024-02-11
+
+--- a/src/wast-parser.cc
++++ b/src/wast-parser.cc
+@@ -2059,7 +2059,7 @@
+     CHECK_RESULT(ParseVar(&memidx));
+     if (ParseVarOpt(&var, Var(0, loc))) {
+       if (!options_->features.multi_memory_enabled()) {
+-        Error(loc, "Specifiying memory variable is not allowed");
++        Error(loc, "Specifying memory variable is not allowed");
+         return Result::Error;
+       }
+       out_expr->reset(new T(var, memidx, loc));

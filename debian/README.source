@@ -1,0 +1,5 @@
+Please copy the wasm.h header from the old source package or from the git
+submodule in third_party/wasm-c-api to include/wabt/. Otherwise the package will
+FTBFS.
+
+See also https://github.com/WebAssembly/wabt/issues/1315

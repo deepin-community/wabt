@@ -1,0 +1,9 @@
+version=4
+opts=filenamemangle=s/.+\/@ANY_VERSION@(@ARCHIVE_EXT@)$/@PACKAGE@-$1$2/,repacksuffix=+dsfg \
+  https://github.com/WebAssembly/wabt/tags .*/@ANY_VERSION@@ARCHIVE_EXT@ group
+
+# exclude nightly version
+opts="searchmode=plain,ctype=nodejs,component=node-wabt-js,filenamemangle=s/@ANY_VERSION@$/node-wabt-js-$1.tar.gz/" \
+ https://api.github.com/repos/AssemblyScript/wabt.js/tags?per_page=1000 \
+ https://api.github.com/repos/AssemblyScript/wabt.js/tarball/refs/tags/v?(\d+(?:\.\d+)*) checksum
+

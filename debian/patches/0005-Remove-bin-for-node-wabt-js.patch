@@ -1,0 +1,41 @@
+From: =?utf-8?q?Bastien_Roucari=C3=A8s?= <rouca@debian.org>
+Date: Sat, 30 Dec 2023 21:44:17 +0000
+Subject: Remove bin for node-wabt-js
+
+We could always on debian use binary
+
+Forwarded: not-needed
+---
+ node-wabt-js/package.json | 12 ------------
+ 1 file changed, 12 deletions(-)
+
+diff --git a/node-wabt-js/package.json b/node-wabt-js/package.json
+index e504bd9..9aadb74 100644
+--- a/node-wabt-js/package.json
++++ b/node-wabt-js/package.json
+@@ -13,17 +13,6 @@
+   ],
+   "main": "index.js",
+   "typings": "index.d.ts",
+-  "bin": {
+-    "wasm2c": "bin/wasm2c",
+-    "wasm2wat": "bin/wasm2wat",
+-    "wat2wasm": "bin/wat2wasm",
+-    "wasm-decompile": "bin/wasm-decompile",
+-    "wasm-interp": "bin/wasm-interp",
+-    "wasm-objdump": "bin/wasm-objdump",
+-    "wasm-opcodecnt": "bin/wasm-opcodecnt",
+-    "wasm-strip": "bin/wasm-strip",
+-    "wasm-validate": "bin/wasm-validate"
+-  },
+   "scripts": {
+     "asbuild:mvp": "asc tests/assembly/module.ts -t tests/assembly/module.wat -b tests/assembly/module.wasm --runtime none",
+     "asbuild:features": "asc tests/assembly/module-features.ts -t tests/assembly/module-features.wat -b tests/assembly/module-features.wasm --runtime none --enable simd",
+@@ -35,7 +24,6 @@
+     "index.d.ts",
+     "package.json",
+     "package-lock.json",
+-    "bin/*",
+     "README.md"
+   ],
+   "devDependencies": {
