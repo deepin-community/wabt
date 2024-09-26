@@ -1,0 +1,16 @@
+Description: interp-wasm-c-api.cc
+Author: Markus Koschany <apo@debian.org>
+Forwarded: not-needed
+Last-Update: 2020-05-10
+
+--- a/src/interp/interp-wasm-c-api.cc
++++ b/src/interp/interp-wasm-c-api.cc
+@@ -14,7 +14,7 @@
+  * limitations under the License.
+  */
+ 
+-#include <wasm.h>
++#include "wabt/wasm.h"
+ 
+ #include "wabt/binary-reader.h"
+ #include "wabt/cast.h"

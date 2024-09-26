@@ -1,0 +1,5 @@
+# Same authors
+add-component-copyright node-wabt-js [debian/copyright]
+
+# Test files
+very-long-line-length-in-source-file * [test/*.txt:*]

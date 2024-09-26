@@ -1,0 +1,6 @@
+interp-wasm-c-api.cc.patch
+0002-Add-picosha2.patch
+0003-Use-debian-dir-for-emscript-makefile.patch
+0004-Add-wasm.h.patch
+0005-Remove-bin-for-node-wabt-js.patch
+0006-spelling-error.patch

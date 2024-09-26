@@ -1,0 +1,22 @@
+From: =?utf-8?q?Bastien_Roucari=C3=A8s?= <rouca@debian.org>
+Date: Tue, 5 Dec 2023 21:42:09 +0000
+Subject: Use debian dir for emscript makefile
+
+forwarded: not-needed
+---
+ Makefile | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/Makefile b/Makefile
+index 78d1ef4..be7e64b 100644
+--- a/Makefile
++++ b/Makefile
+@@ -54,7 +54,7 @@ GCC_I686_FLAG := -DCMAKE_C_COMPILER=gcc -DCMAKE_CXX_COMPILER=g++ \
+ CLANG_FLAG := -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++
+ CLANG_I686_FLAG := -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ \
+ 	-DCMAKE_C_FLAGS=-m32 -DCMAKE_CXX_FLAGS=-m32
+-EMCC_FLAG := -DCMAKE_TOOLCHAIN_FILE=${EMSCRIPTEN_DIR}/cmake/Modules/Platform/Emscripten.cmake
++EMCC_FLAG := -DCMAKE_TOOLCHAIN_FILE=/usr/share/emscripten/cmake/Modules/Platform/Emscripten.cmake
+ DEBUG_FLAG := -DCMAKE_BUILD_TYPE=Debug
+ RELEASE_FLAG := -DCMAKE_BUILD_TYPE=Release
+ NORMAL_FLAG :=
