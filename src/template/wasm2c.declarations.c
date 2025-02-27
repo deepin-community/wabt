@@ -1,7 +1,61 @@
 
+// Computes a pointer to an object of the given size in a little-endian memory.
+//
+// On a little-endian host, this is just &mem->data[addr] - the object's size is
+// unused. On a big-endian host, it's &mem->data[mem->size - addr - n], where n
+// is the object's size.
+//
+// Note that mem may be evaluated multiple times.
+//
+// Parameters:
+// mem - The memory.
+// addr - The address.
+// n - The size of the object.
+//
+// Result:
+// A pointer for an object of size n.
+#if WABT_BIG_ENDIAN
+#define MEM_ADDR(mem, addr, n) &(mem)->data[(mem)->size - (addr) - (n)]
+#else
+#define MEM_ADDR(mem, addr, n) &(mem)->data[addr]
+#endif
+
+#ifndef WASM_RT_USE_SEGUE
+// Memory functions can use the segue optimization if allowed. The segue
+// optimization uses x86 segments to point to a linear memory. We use this
+// optimization when:
+//
+// (1) Segue is allowed using WASM_RT_ALLOW_SEGUE
+// (2) on x86_64 without WABT_BIG_ENDIAN enabled
+// (3) the Wasm module uses a single unshared imported or exported memory
+// (4) the compiler supports: intrinsics for (rd|wr)gsbase, "address namespaces"
+//     for accessing pointers, and supports memcpy on pointers with custom
+//     "address namespaces". GCC does not support the memcpy requirement, so
+//     this leaves only clang for now.
+// (5) The OS doesn't replace the segment register on context switch which
+//     eliminates windows for now
+#if WASM_RT_ALLOW_SEGUE && !WABT_BIG_ENDIAN &&                               \
+    (defined(__x86_64__) || defined(_M_X64)) && IS_SINGLE_UNSHARED_MEMORY && \
+    __clang__ && __has_builtin(__builtin_ia32_wrgsbase64) && !defined(_WIN32)
+#define WASM_RT_USE_SEGUE 1
+#else
+#define WASM_RT_USE_SEGUE 0
+#endif
+#endif
+
+#if WASM_RT_USE_SEGUE
+// POSIX uses FS for TLS, GS is free
+#define WASM_RT_SEGUE_READ_BASE() __builtin_ia32_rdgsbase64()
+#define WASM_RT_SEGUE_WRITE_BASE(base) \
+  __builtin_ia32_wrgsbase64((uintptr_t)base)
+#define MEM_ADDR_MEMOP(mem, addr, n) ((uint8_t __seg_gs*)(uintptr_t)addr)
+#else
+#define MEM_ADDR_MEMOP(mem, addr, n) MEM_ADDR(mem, addr, n)
+#endif
+
 #define TRAP(x) (wasm_rt_trap(WASM_RT_TRAP_##x), 0)
 
-#if WASM_RT_USE_STACK_DEPTH_COUNT
+#if WASM_RT_STACK_DEPTH_COUNT
 #define FUNC_PROLOGUE                                            \
   if (++wasm_rt_call_stack_depth > WASM_RT_MAX_CALL_STACK_DEPTH) \
     TRAP(EXHAUSTION);
@@ -46,10 +100,23 @@ static inline bool func_types_eq(const wasm_rt_func_type_t a,
     TRAP(OOB);
 #endif
 
-#if WASM_RT_MEMCHECK_GUARD_PAGES
-#define MEMCHECK(mem, a, t)
+#if WASM_RT_USE_SEGUE && WASM_RT_SANITY_CHECKS
+#include <stdio.h>
+#define WASM_RT_CHECK_BASE(mem)                                               \
+  if (((uintptr_t)((mem)->data)) != ((uintptr_t)WASM_RT_SEGUE_READ_BASE())) { \
+    puts("Segment register mismatch\n");                                      \
+    abort();                                                                  \
+  }
 #else
-#define MEMCHECK(mem, a, t) RANGE_CHECK(mem, a, sizeof(t))
+#define WASM_RT_CHECK_BASE(mem)
+#endif
+
+#if WASM_RT_MEMCHECK_GUARD_PAGES
+#define MEMCHECK(mem, a, t) WASM_RT_CHECK_BASE(mem);
+#else
+#define MEMCHECK(mem, a, t) \
+  WASM_RT_CHECK_BASE(mem);  \
+  RANGE_CHECK(mem, a, sizeof(t))
 #endif
 
 #ifdef __GNUC__
@@ -67,70 +134,44 @@ static inline bool func_types_eq(const wasm_rt_func_type_t a,
 #define FORCE_READ_FLOAT(var)
 #endif
 
-#if WABT_BIG_ENDIAN
 static inline void load_data(void* dest, const void* src, size_t n) {
   if (!n) {
     return;
   }
-  size_t i = 0;
-  u8* dest_chars = dest;
   wasm_rt_memcpy(dest, src, n);
-  for (i = 0; i < (n >> 1); i++) {
+#if WABT_BIG_ENDIAN
+  u8* dest_chars = dest;
+  for (size_t i = 0; i < (n >> 1); i++) {
     u8 cursor = dest_chars[i];
     dest_chars[i] = dest_chars[n - i - 1];
     dest_chars[n - i - 1] = cursor;
   }
+#endif
 }
-#define LOAD_DATA(m, o, i, s)                   \
-  do {                                          \
-    RANGE_CHECK((&m), m.size - o - s, s);       \
-    load_data(&(m.data[m.size - o - s]), i, s); \
-  } while (0)
-#define DEFINE_LOAD(name, t1, t2, t3, force_read)                      \
-  static inline t3 name(wasm_rt_memory_t* mem, u64 addr) {             \
-    MEMCHECK(mem, addr, t1);                                           \
-    t1 result;                                                         \
-    wasm_rt_memcpy(&result, &mem->data[mem->size - addr - sizeof(t1)], \
-                   sizeof(t1));                                        \
-    force_read(result);                                                \
-    return (t3)(t2)result;                                             \
-  }
 
-#define DEFINE_STORE(name, t1, t2)                                      \
-  static inline void name(wasm_rt_memory_t* mem, u64 addr, t2 value) {  \
-    MEMCHECK(mem, addr, t1);                                            \
-    t1 wrapped = (t1)value;                                             \
-    wasm_rt_memcpy(&mem->data[mem->size - addr - sizeof(t1)], &wrapped, \
-                   sizeof(t1));                                         \
-  }
-#else
-static inline void load_data(void* dest, const void* src, size_t n) {
-  if (!n) {
-    return;
-  }
-  wasm_rt_memcpy(dest, src, n);
-}
-#define LOAD_DATA(m, o, i, s)      \
-  do {                             \
-    RANGE_CHECK((&m), o, s);       \
-    load_data(&(m.data[o]), i, s); \
+#define LOAD_DATA(m, o, i, s)            \
+  do {                                   \
+    RANGE_CHECK((&m), o, s);             \
+    load_data(MEM_ADDR(&m, o, s), i, s); \
   } while (0)
-#define DEFINE_LOAD(name, t1, t2, t3, force_read)          \
-  static inline t3 name(wasm_rt_memory_t* mem, u64 addr) { \
-    MEMCHECK(mem, addr, t1);                               \
-    t1 result;                                             \
-    wasm_rt_memcpy(&result, &mem->data[addr], sizeof(t1)); \
-    force_read(result);                                    \
-    return (t3)(t2)result;                                 \
+
+#define DEFINE_LOAD(name, t1, t2, t3, force_read)                  \
+  static inline t3 name(wasm_rt_memory_t* mem, u64 addr) {         \
+    MEMCHECK(mem, addr, t1);                                       \
+    t1 result;                                                     \
+    wasm_rt_memcpy(&result, MEM_ADDR_MEMOP(mem, addr, sizeof(t1)), \
+                   sizeof(t1));                                    \
+    force_read(result);                                            \
+    return (t3)(t2)result;                                         \
   }
 
 #define DEFINE_STORE(name, t1, t2)                                     \
   static inline void name(wasm_rt_memory_t* mem, u64 addr, t2 value) { \
     MEMCHECK(mem, addr, t1);                                           \
     t1 wrapped = (t1)value;                                            \
-    wasm_rt_memcpy(&mem->data[addr], &wrapped, sizeof(t1));            \
+    wasm_rt_memcpy(MEM_ADDR_MEMOP(mem, addr, sizeof(t1)), &wrapped,    \
+                   sizeof(t1));                                        \
   }
-#endif
 
 DEFINE_LOAD(i32_load, u32, u32, u32, FORCE_READ_INT)
 DEFINE_LOAD(i64_load, u64, u64, u64, FORCE_READ_INT)
@@ -480,7 +521,7 @@ static float wasm_sqrtf(float x) {
 
 static inline void memory_fill(wasm_rt_memory_t* mem, u32 d, u32 val, u32 n) {
   RANGE_CHECK(mem, d, n);
-  memset(mem->data + d, val, n);
+  memset(MEM_ADDR(mem, d, n), val, n);
 }
 
 static inline void memory_copy(wasm_rt_memory_t* dest,
@@ -490,7 +531,7 @@ static inline void memory_copy(wasm_rt_memory_t* dest,
                                u32 n) {
   RANGE_CHECK(dest, dest_addr, n);
   RANGE_CHECK(src, src_addr, n);
-  memmove(dest->data + dest_addr, src->data + src_addr, n);
+  memmove(MEM_ADDR(dest, dest_addr, n), MEM_ADDR(src, src_addr, n), n);
 }
 
 static inline void memory_init(wasm_rt_memory_t* dest,

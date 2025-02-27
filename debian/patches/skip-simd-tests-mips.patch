@@ -1,0 +1,29 @@
+Description: skip failing tests on mips64el
+Forwarded: https://github.com/WebAssembly/wabt/issues/2543
+Author: Jérémy Lal <kapouer@melix.org>
+Last-Update: 2025-02-17
+--- a/test/interp/simd-binary.txt
++++ b/test/interp/simd-binary.txt
+@@ -1,3 +1,4 @@
++;;; NOT-ARCHS: mips64
+ ;;; TOOL: run-interp
+ (module
+   ;; i8x16 add
+--- a/test/interp/simd-unary.txt
++++ b/test/interp/simd-unary.txt
+@@ -1,3 +1,4 @@
++;;; NOT-ARCHS: mips64
+ ;;; TOOL: run-interp
+ (module
+   ;; i8x16 neg
+--- a/test/run-tests.py
++++ b/test/run-tests.py
+@@ -505,6 +505,8 @@
+             self.skip = platform.system() not in value.split()
+         elif key == 'NOT-PLATFORMS':
+             self.skip = platform.system() in value.split()
++        elif key == 'NOT-ARCHS':
++            self.skip = platform.machine() in value.split()
+         else:
+             raise Error('Unknown directive: %s' % key)
+ 

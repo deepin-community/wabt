@@ -308,6 +308,7 @@ class CWriter {
 
   void Indent(int size = INDENT_SIZE);
   void Dedent(int size = INDENT_SIZE);
+  void NonIndented(std::function<void()> func);
   void WriteIndent();
   void WriteData(const char* src, size_t size);
   void Writef(const char* format, ...);
@@ -388,8 +389,8 @@ class CWriter {
   void WriteGlobal(const Global&, const std::string&);
   void WriteGlobalPtr(const Global&, const std::string&);
   void WriteMemories();
-  void WriteMemory(const std::string&);
-  void WriteMemoryPtr(const std::string&);
+  void WriteMemory(const std::string&, const Memory& memory);
+  void WriteMemoryPtr(const std::string&, const Memory& memory);
   void WriteTables();
   void WriteTable(const std::string&, const wabt::Type&);
   void WriteTablePtr(const std::string&, const Table&);
@@ -402,6 +403,9 @@ class CWriter {
   void WriteElemInitializerDecls();
   void WriteElemInitializers();
   void WriteElemTableInit(bool, const ElemSegment*, const Table*);
+  bool IsSingleUnsharedMemory();
+  void InstallSegueBase(Memory* memory, bool save_old_value);
+  void RestoreSegueBase();
   void WriteExports(CWriterPhase);
   void WriteTailCallExports(CWriterPhase);
   void WriteInitDecl();
@@ -1021,6 +1025,13 @@ void CWriter::Dedent(int size) {
   assert(indent_ >= 0);
 }
 
+void CWriter::NonIndented(std::function<void()> func) {
+  int copy = indent_;
+  indent_ = 0;
+  func();
+  indent_ = copy;
+}
+
 void CWriter::WriteIndent() {
   static char s_indent[] =
       "                                                                       "
@@ -1292,14 +1303,24 @@ void CWriter::Write(const Const& const_) {
         // Negative zero. Special-cased so it isn't written as -0 below.
         Writef("-0.0");
       } else {
-        Writef("%.17g", Bitcast<double>(f64_bits));
+        char buf[128];
+        snprintf(buf, sizeof(buf), "%.17g", Bitcast<double>(f64_bits));
+        // Append .0 if sprint didn't include a decimal point or use the
+        // exponent ('e') form.  This is a workaround for an MSVC parsing
+        // issue: https://github.com/WebAssembly/wabt/issues/2422
+        if (!strchr(buf, '.') && !strchr(buf, 'e')) {
+          strcat(buf, ".0");
+        }
+        Writef("%s", buf);
       }
       break;
     }
     case Type::V128: {
-      Writef("simde_wasm_i32x4_const(0x%08x, 0x%08x, 0x%08x, 0x%08x)",
-             const_.vec128().u32(0), const_.vec128().u32(1),
-             const_.vec128().u32(2), const_.vec128().u32(3));
+      Writef("v128_const(0x%02x", const_.vec128().u8(0));
+      for (int i = 1; i < 16; i++) {
+        Writef(", 0x%02x", const_.vec128().u8(i));
+      }
+      Write(")");
       break;
     }
 
@@ -1326,6 +1347,15 @@ void CWriter::WriteGetFuncTypeDecl() {
   Write("wasm_rt_func_type_t ", kAdminSymbolPrefix, module_prefix_,
         "_get_func_type(uint32_t param_count, uint32_t result_count, ...);",
         Newline());
+}
+
+static std::string GetMemoryTypeString(const Memory& memory) {
+  return memory.page_limits.is_shared ? "wasm_rt_shared_memory_t"
+                                      : "wasm_rt_memory_t";
+}
+
+static std::string GetMemoryAPIString(const Memory& memory, std::string api) {
+  return memory.page_limits.is_shared ? (api + "_shared") : api;
 }
 
 void CWriter::WriteInitExpr(const ExprList& expr_list) {
@@ -1460,6 +1490,11 @@ std::string CWriter::GenerateHeaderGuard() const {
 void CWriter::WriteSourceTop() {
   Write(s_source_includes);
   Write(Newline(), "#include \"", header_name_, "\"", Newline());
+
+  if (IsSingleUnsharedMemory()) {
+    Write("#define IS_SINGLE_UNSHARED_MEMORY 1", Newline());
+  }
+
   Write(s_source_declarations, Newline());
 
   if (module_->features_used.simd) {
@@ -1633,7 +1668,7 @@ void CWriter::SerializeFuncType(const FuncType& func_type,
     *next_byte++ = MangleType(func_type.GetResultType(i));
   }
 
-  assert(next_byte - mangled_signature == len);
+  assert(next_byte - mangled_signature == static_cast<ptrdiff_t>(len));
 
   // step 4: SHA-256 the whole string
   sha256({mangled_signature, len}, serialized_type);
@@ -1736,7 +1771,7 @@ void CWriter::BeginInstance() {
       }
 
       case ExternalKind::Memory: {
-        Write("wasm_rt_memory_t");
+        Write(GetMemoryTypeString(cast<MemoryImport>(import)->memory));
         break;
       }
 
@@ -1779,7 +1814,8 @@ void CWriter::BeginInstance() {
 
       case ExternalKind::Memory:
         WriteMemory(std::string("*") +
-                    ExportName(import->module_name, import->field_name));
+                        ExportName(import->module_name, import->field_name),
+                    cast<MemoryImport>(import)->memory);
         break;
 
       case ExternalKind::Table: {
@@ -1846,7 +1882,7 @@ void CWriter::WriteTailCallWeakImports() {
     Index num_results = func.GetNumResults();
     if (num_params >= 1) {
       Write(func.decl.sig.param_types, " params;", Newline());
-      Write("wasm_rt_memcpy(params, tail_call_stack, sizeof(params);",
+      Write("wasm_rt_memcpy(params, tail_call_stack, sizeof(params));",
             Newline());
     }
 
@@ -2027,19 +2063,20 @@ void CWriter::WriteMemories() {
     bool is_import = memory_index < module_->num_memory_imports;
     if (!is_import) {
       WriteMemory(
-          DefineInstanceMemberName(ModuleFieldType::Memory, memory->name));
+          DefineInstanceMemberName(ModuleFieldType::Memory, memory->name),
+          *memory);
       Write(Newline());
     }
     ++memory_index;
   }
 }
 
-void CWriter::WriteMemory(const std::string& name) {
-  Write("wasm_rt_memory_t ", name, ";");
+void CWriter::WriteMemory(const std::string& name, const Memory& memory) {
+  Write(GetMemoryTypeString(memory), " ", name, ";");
 }
 
-void CWriter::WriteMemoryPtr(const std::string& name) {
-  Write("wasm_rt_memory_t* ", name, "(", ModuleInstanceTypeName(),
+void CWriter::WriteMemoryPtr(const std::string& name, const Memory& memory) {
+  Write(GetMemoryTypeString(memory), "* ", name, "(", ModuleInstanceTypeName(),
         "* instance)");
 }
 
@@ -2169,7 +2206,8 @@ void CWriter::WriteDataInitializers() {
         max = memory->page_limits.is_64 ? (static_cast<uint64_t>(1) << 48)
                                         : 65536;
       }
-      Write("wasm_rt_allocate_memory(",
+      std::string func = GetMemoryAPIString(*memory, "wasm_rt_allocate_memory");
+      Write(func, "(",
             ExternalInstancePtr(ModuleFieldType::Memory, memory->name), ", ",
             memory->page_limits.initial, ", ", max, ", ",
             memory->page_limits.is_64, ");", Newline());
@@ -2403,6 +2441,28 @@ void CWriter::WriteElemTableInit(bool active_initialization,
   Write(");", Newline());
 }
 
+bool CWriter::IsSingleUnsharedMemory() {
+  return module_->memories.size() == 1 &&
+         !module_->memories[0]->page_limits.is_shared;
+}
+
+void CWriter::InstallSegueBase(Memory* memory, bool save_old_value) {
+  NonIndented([&] { Write("#if WASM_RT_USE_SEGUE", Newline()); });
+  if (save_old_value) {
+    Write("uintptr_t segue_saved_base = WASM_RT_SEGUE_READ_BASE();", Newline());
+  }
+  auto primary_memory =
+      ExternalInstanceRef(ModuleFieldType::Memory, memory->name);
+  Write("WASM_RT_SEGUE_WRITE_BASE(", primary_memory, ".data);", Newline());
+  NonIndented([&] { Write("#endif", Newline()); });
+}
+
+void CWriter::RestoreSegueBase() {
+  NonIndented([&] { Write("#if WASM_RT_USE_SEGUE", Newline()); });
+  Write("WASM_RT_SEGUE_WRITE_BASE(segue_saved_base);", Newline());
+  NonIndented([&] { Write("#endif", Newline()); });
+}
+
 void CWriter::WriteExports(CWriterPhase kind) {
   if (module_->exports.empty())
     return;
@@ -2444,7 +2504,7 @@ void CWriter::WriteExports(CWriterPhase kind) {
       case ExternalKind::Memory: {
         const Memory* memory = module_->GetMemory(export_->var);
         internal_name = memory->name;
-        WriteMemoryPtr(mangled_name);
+        WriteMemoryPtr(mangled_name, *memory);
         break;
       }
 
@@ -2478,8 +2538,14 @@ void CWriter::WriteExports(CWriterPhase kind) {
     switch (export_->kind) {
       case ExternalKind::Func: {
         Write(OpenBrace());
-        if (func_->GetNumResults() > 0) {
-          Write("return ");
+        if (IsSingleUnsharedMemory()) {
+          InstallSegueBase(module_->memories[0], true /* save_old_value */);
+        }
+        auto num_results = func_->GetNumResults();
+        if (num_results > 1) {
+          Write(func_->decl.sig.result_types, " ret = ");
+        } else if (num_results == 1) {
+          Write(func_->GetResultType(0), " ret = ");
         }
         Write(ExternalRef(ModuleFieldType::Func, internal_name), "(");
 
@@ -2491,6 +2557,12 @@ void CWriter::WriteExports(CWriterPhase kind) {
           Write("instance");
         }
         WriteParamSymbols(index_to_name);
+        if (IsSingleUnsharedMemory()) {
+          RestoreSegueBase();
+        }
+        if (num_results > 0) {
+          Write("return ret;", Newline());
+        }
         Write(CloseBrace(), Newline());
 
         local_sym_map_.clear();
@@ -2589,6 +2661,9 @@ void CWriter::WriteInit() {
   }
   if (!module_->memories.empty()) {
     Write("init_memories(instance);", Newline());
+    if (IsSingleUnsharedMemory()) {
+      InstallSegueBase(module_->memories[0], true /* save_old_value */);
+    }
   }
   if (!module_->tables.empty() && !module_->elem_segments.empty()) {
     Write("init_elem_instances(instance);", Newline());
@@ -2608,6 +2683,10 @@ void CWriter::WriteInit() {
       Write("(instance);");
     }
     Write(Newline());
+  }
+
+  if (IsSingleUnsharedMemory()) {
+    RestoreSegueBase();
   }
   Write(CloseBrace(), Newline());
 }
@@ -2754,7 +2833,8 @@ void CWriter::WriteFree() {
     for (const Memory* memory : module_->memories) {
       bool is_import = memory_index < module_->num_memory_imports;
       if (!is_import) {
-        Write("wasm_rt_free_memory(",
+        std::string func = GetMemoryAPIString(*memory, "wasm_rt_free_memory");
+        Write(func, "(",
               ExternalInstancePtr(ModuleFieldType::Memory, memory->name), ");",
               Newline());
       }
@@ -2957,14 +3037,14 @@ void CWriter::Write(const Func& func) {
 
 template <typename Vars, typename TypeOf, typename ToDo>
 void CWriter::WriteVarsByType(const Vars& vars,
-                              const TypeOf& typeof,
+                              const TypeOf& typeoffunc,
                               const ToDo& todo) {
   for (Type type : {Type::I32, Type::I64, Type::F32, Type::F64, Type::V128,
                     Type::FuncRef, Type::ExternRef}) {
     Index var_index = 0;
     size_t count = 0;
     for (const auto& var : vars) {
-      if (typeof(var) == type) {
+      if (typeoffunc(var) == type) {
         if (count == 0) {
           Write(type, " ");
           Indent(4);
@@ -3621,18 +3701,18 @@ void CWriter::Write(const ExprList& exprs) {
 
       case ExprType::TableGrow: {
         const Table* table = module_->GetTable(cast<TableGrowExpr>(&expr)->var);
-        Write(StackVar(1, Type::I32), " = wasm_rt_grow_",
+        Write(StackVar(1, table->elem_limits.IndexType()), " = wasm_rt_grow_",
               GetReferenceTypeName(table->elem_type), "_table(",
               ExternalInstancePtr(ModuleFieldType::Table, table->name), ", ",
               StackVar(0), ", ", StackVar(1), ");", Newline());
         DropTypes(2);
-        PushType(Type::I32);
+        PushType(table->elem_limits.IndexType());
       } break;
 
       case ExprType::TableSize: {
         const Table* table = module_->GetTable(cast<TableSizeExpr>(&expr)->var);
 
-        PushType(Type::I32);
+        PushType(table->elem_limits.IndexType());
         Write(StackVar(0), " = ",
               ExternalInstanceRef(ModuleFieldType::Table, table->name),
               ".size;", Newline());
@@ -3706,9 +3786,13 @@ void CWriter::Write(const ExprList& exprs) {
         Memory* memory = module_->memories[module_->GetMemoryIndex(
             cast<MemoryGrowExpr>(&expr)->memidx)];
 
-        Write(StackVar(0), " = wasm_rt_grow_memory(",
+        std::string func = GetMemoryAPIString(*memory, "wasm_rt_grow_memory");
+        Write(StackVar(0), " = ", func, "(",
               ExternalInstancePtr(ModuleFieldType::Memory, memory->name), ", ",
               StackVar(0), ");", Newline());
+        if (IsSingleUnsharedMemory()) {
+          InstallSegueBase(module_->memories[0], false /* save_old_value */);
+        }
         break;
       }
 
@@ -4164,11 +4248,11 @@ void CWriter::Write(const BinaryExpr& expr) {
       break;
 
     case Opcode::I8X16NarrowI16X8S:
-      WritePrefixBinaryExpr(expr.opcode, "simde_wasm_i8x16_narrow_i16x8");
+      WritePrefixBinaryExpr(expr.opcode, "v128_i8x16_narrow_i16x8");
       break;
 
     case Opcode::I8X16NarrowI16X8U:
-      WritePrefixBinaryExpr(expr.opcode, "simde_wasm_u8x16_narrow_i16x8");
+      WritePrefixBinaryExpr(expr.opcode, "v128_u8x16_narrow_i16x8");
       break;
 
     case Opcode::I8X16Shl:
@@ -4196,7 +4280,7 @@ void CWriter::Write(const BinaryExpr& expr) {
       break;
 
     case Opcode::I8X16Swizzle:
-      WritePrefixBinaryExpr(expr.opcode, "simde_wasm_i8x16_swizzle");
+      WritePrefixBinaryExpr(expr.opcode, "v128_i8x16_swizzle");
       break;
 
     case Opcode::I16X8Add:
@@ -4216,19 +4300,19 @@ void CWriter::Write(const BinaryExpr& expr) {
       break;
 
     case Opcode::I16X8ExtmulHighI8X16S:
-      WritePrefixBinaryExpr(expr.opcode, "simde_wasm_i16x8_extmul_high_i8x16");
+      WritePrefixBinaryExpr(expr.opcode, "v128_i16x8_extmul_high_i8x16");
       break;
 
     case Opcode::I16X8ExtmulHighI8X16U:
-      WritePrefixBinaryExpr(expr.opcode, "simde_wasm_u16x8_extmul_high_u8x16");
+      WritePrefixBinaryExpr(expr.opcode, "v128_u16x8_extmul_high_u8x16");
       break;
 
     case Opcode::I16X8ExtmulLowI8X16S:
-      WritePrefixBinaryExpr(expr.opcode, "simde_wasm_i16x8_extmul_low_i8x16");
+      WritePrefixBinaryExpr(expr.opcode, "v128_i16x8_extmul_low_i8x16");
       break;
 
     case Opcode::I16X8ExtmulLowI8X16U:
-      WritePrefixBinaryExpr(expr.opcode, "simde_wasm_u16x8_extmul_low_u8x16");
+      WritePrefixBinaryExpr(expr.opcode, "v128_u16x8_extmul_low_u8x16");
       break;
 
     case Opcode::I16X8MaxS:
@@ -4252,11 +4336,11 @@ void CWriter::Write(const BinaryExpr& expr) {
       break;
 
     case Opcode::I16X8NarrowI32X4S:
-      WritePrefixBinaryExpr(expr.opcode, "simde_wasm_i16x8_narrow_i32x4");
+      WritePrefixBinaryExpr(expr.opcode, "v128_i16x8_narrow_i32x4");
       break;
 
     case Opcode::I16X8NarrowI32X4U:
-      WritePrefixBinaryExpr(expr.opcode, "simde_wasm_u16x8_narrow_i32x4");
+      WritePrefixBinaryExpr(expr.opcode, "v128_u16x8_narrow_i32x4");
       break;
 
     case Opcode::I16X8Q15mulrSatS:
@@ -4296,19 +4380,19 @@ void CWriter::Write(const BinaryExpr& expr) {
       break;
 
     case Opcode::I32X4ExtmulHighI16X8S:
-      WritePrefixBinaryExpr(expr.opcode, "simde_wasm_i32x4_extmul_high_i16x8");
+      WritePrefixBinaryExpr(expr.opcode, "v128_i32x4_extmul_high_i16x8");
       break;
 
     case Opcode::I32X4ExtmulHighI16X8U:
-      WritePrefixBinaryExpr(expr.opcode, "simde_wasm_u32x4_extmul_high_u16x8");
+      WritePrefixBinaryExpr(expr.opcode, "v128_u32x4_extmul_high_u16x8");
       break;
 
     case Opcode::I32X4ExtmulLowI16X8S:
-      WritePrefixBinaryExpr(expr.opcode, "simde_wasm_i32x4_extmul_low_i16x8");
+      WritePrefixBinaryExpr(expr.opcode, "v128_i32x4_extmul_low_i16x8");
       break;
 
     case Opcode::I32X4ExtmulLowI16X8U:
-      WritePrefixBinaryExpr(expr.opcode, "simde_wasm_u32x4_extmul_low_u16x8");
+      WritePrefixBinaryExpr(expr.opcode, "v128_u32x4_extmul_low_u16x8");
       break;
 
     case Opcode::I32X4MaxS:
@@ -4352,19 +4436,19 @@ void CWriter::Write(const BinaryExpr& expr) {
       break;
 
     case Opcode::I64X2ExtmulHighI32X4S:
-      WritePrefixBinaryExpr(expr.opcode, "simde_wasm_i64x2_extmul_high_i32x4");
+      WritePrefixBinaryExpr(expr.opcode, "v128_i64x2_extmul_high_i32x4");
       break;
 
     case Opcode::I64X2ExtmulHighI32X4U:
-      WritePrefixBinaryExpr(expr.opcode, "simde_wasm_u64x2_extmul_high_u32x4");
+      WritePrefixBinaryExpr(expr.opcode, "v128_u64x2_extmul_high_u32x4");
       break;
 
     case Opcode::I64X2ExtmulLowI32X4S:
-      WritePrefixBinaryExpr(expr.opcode, "simde_wasm_i64x2_extmul_low_i32x4");
+      WritePrefixBinaryExpr(expr.opcode, "v128_i64x2_extmul_low_i32x4");
       break;
 
     case Opcode::I64X2ExtmulLowI32X4U:
-      WritePrefixBinaryExpr(expr.opcode, "simde_wasm_u64x2_extmul_low_u32x4");
+      WritePrefixBinaryExpr(expr.opcode, "v128_u64x2_extmul_low_u32x4");
       break;
 
     case Opcode::I64X2Mul:
@@ -4884,13 +4968,11 @@ void CWriter::Write(const ConvertExpr& expr) {
       break;
 
     case Opcode::I32X4TruncSatF64X2SZero:
-      WriteSimpleUnaryExpr(expr.opcode,
-                           "simde_wasm_i32x4_trunc_sat_f64x2_zero");
+      WriteSimpleUnaryExpr(expr.opcode, "v128_i32x4_trunc_sat_f64x2_zero");
       break;
 
     case Opcode::I32X4TruncSatF64X2UZero:
-      WriteSimpleUnaryExpr(expr.opcode,
-                           "simde_wasm_u32x4_trunc_sat_f64x2_zero");
+      WriteSimpleUnaryExpr(expr.opcode, "v128_u32x4_trunc_sat_f64x2_zero");
       break;
 
     case Opcode::F32X4ConvertI32X4S:
@@ -4902,19 +4984,19 @@ void CWriter::Write(const ConvertExpr& expr) {
       break;
 
     case Opcode::F32X4DemoteF64X2Zero:
-      WriteSimpleUnaryExpr(expr.opcode, "simde_wasm_f32x4_demote_f64x2_zero");
+      WriteSimpleUnaryExpr(expr.opcode, "v128_f32x4_demote_f64x2_zero");
       break;
 
     case Opcode::F64X2ConvertLowI32X4S:
-      WriteSimpleUnaryExpr(expr.opcode, "simde_wasm_f64x2_convert_low_i32x4");
+      WriteSimpleUnaryExpr(expr.opcode, "v128_f64x2_convert_low_i32x4");
       break;
 
     case Opcode::F64X2ConvertLowI32X4U:
-      WriteSimpleUnaryExpr(expr.opcode, "simde_wasm_f64x2_convert_low_u32x4");
+      WriteSimpleUnaryExpr(expr.opcode, "v128_f64x2_convert_low_u32x4");
       break;
 
     case Opcode::F64X2PromoteLowF32X4:
-      WriteSimpleUnaryExpr(expr.opcode, "simde_wasm_f64x2_promote_low_f32x4");
+      WriteSimpleUnaryExpr(expr.opcode, "v128_f64x2_promote_low_f32x4");
       break;
 
     default:
@@ -4923,7 +5005,7 @@ void CWriter::Write(const ConvertExpr& expr) {
 }
 
 void CWriter::Write(const LoadExpr& expr) {
-  const char* func = nullptr;
+  std::string func;
   // clang-format off
   switch (expr.opcode) {
     case Opcode::I32Load: func = "i32_load"; break;
@@ -4954,6 +5036,7 @@ void CWriter::Write(const LoadExpr& expr) {
   // clang-format on
 
   Memory* memory = module_->memories[module_->GetMemoryIndex(expr.memidx)];
+  func = GetMemoryAPIString(*memory, func);
 
   Type result_type = expr.opcode.GetResultType();
   Write(StackVar(0, result_type), " = ", func, "(",
@@ -4967,7 +5050,7 @@ void CWriter::Write(const LoadExpr& expr) {
 }
 
 void CWriter::Write(const StoreExpr& expr) {
-  const char* func = nullptr;
+  std::string func;
   // clang-format off
   switch (expr.opcode) {
     case Opcode::I32Store: func = "i32_store"; break;
@@ -4987,6 +5070,7 @@ void CWriter::Write(const StoreExpr& expr) {
   // clang-format on
 
   Memory* memory = module_->memories[module_->GetMemoryIndex(expr.memidx)];
+  func = GetMemoryAPIString(*memory, func);
 
   Write(func, "(", ExternalInstancePtr(ModuleFieldType::Memory, memory->name),
         ", (u64)(", StackVar(1), ")");
@@ -5104,7 +5188,7 @@ void CWriter::Write(const UnaryExpr& expr) {
       break;
 
     case Opcode::I8X16Bitmask:
-      WriteSimpleUnaryExpr(expr.opcode, "simde_wasm_i8x16_bitmask");
+      WriteSimpleUnaryExpr(expr.opcode, "v128_i8x16_bitmask");
       break;
 
     case Opcode::I8X16Neg:
@@ -5128,7 +5212,7 @@ void CWriter::Write(const UnaryExpr& expr) {
       break;
 
     case Opcode::I16X8Bitmask:
-      WriteSimpleUnaryExpr(expr.opcode, "simde_wasm_i16x8_bitmask");
+      WriteSimpleUnaryExpr(expr.opcode, "v128_i16x8_bitmask");
       break;
 
     case Opcode::I16X8ExtaddPairwiseI8X16S:
@@ -5142,19 +5226,19 @@ void CWriter::Write(const UnaryExpr& expr) {
       break;
 
     case Opcode::I16X8ExtendHighI8X16S:
-      WriteSimpleUnaryExpr(expr.opcode, "simde_wasm_i16x8_extend_high_i8x16");
+      WriteSimpleUnaryExpr(expr.opcode, "v128_i16x8_extend_high_i8x16");
       break;
 
     case Opcode::I16X8ExtendHighI8X16U:
-      WriteSimpleUnaryExpr(expr.opcode, "simde_wasm_u16x8_extend_high_u8x16");
+      WriteSimpleUnaryExpr(expr.opcode, "v128_u16x8_extend_high_u8x16");
       break;
 
     case Opcode::I16X8ExtendLowI8X16S:
-      WriteSimpleUnaryExpr(expr.opcode, "simde_wasm_i16x8_extend_low_i8x16");
+      WriteSimpleUnaryExpr(expr.opcode, "v128_i16x8_extend_low_i8x16");
       break;
 
     case Opcode::I16X8ExtendLowI8X16U:
-      WriteSimpleUnaryExpr(expr.opcode, "simde_wasm_u16x8_extend_low_u8x16");
+      WriteSimpleUnaryExpr(expr.opcode, "v128_u16x8_extend_low_u8x16");
       break;
 
     case Opcode::I16X8Neg:
@@ -5174,7 +5258,7 @@ void CWriter::Write(const UnaryExpr& expr) {
       break;
 
     case Opcode::I32X4Bitmask:
-      WriteSimpleUnaryExpr(expr.opcode, "simde_wasm_i32x4_bitmask");
+      WriteSimpleUnaryExpr(expr.opcode, "v128_i32x4_bitmask");
       break;
 
     case Opcode::I32X4ExtaddPairwiseI16X8S:
@@ -5188,19 +5272,19 @@ void CWriter::Write(const UnaryExpr& expr) {
       break;
 
     case Opcode::I32X4ExtendHighI16X8S:
-      WriteSimpleUnaryExpr(expr.opcode, "simde_wasm_i32x4_extend_high_i16x8");
+      WriteSimpleUnaryExpr(expr.opcode, "v128_i32x4_extend_high_i16x8");
       break;
 
     case Opcode::I32X4ExtendHighI16X8U:
-      WriteSimpleUnaryExpr(expr.opcode, "simde_wasm_u32x4_extend_high_u16x8");
+      WriteSimpleUnaryExpr(expr.opcode, "v128_u32x4_extend_high_u16x8");
       break;
 
     case Opcode::I32X4ExtendLowI16X8S:
-      WriteSimpleUnaryExpr(expr.opcode, "simde_wasm_i32x4_extend_low_i16x8");
+      WriteSimpleUnaryExpr(expr.opcode, "v128_i32x4_extend_low_i16x8");
       break;
 
     case Opcode::I32X4ExtendLowI16X8U:
-      WriteSimpleUnaryExpr(expr.opcode, "simde_wasm_u32x4_extend_low_u16x8");
+      WriteSimpleUnaryExpr(expr.opcode, "v128_u32x4_extend_low_u16x8");
       break;
 
     case Opcode::I32X4Neg:
@@ -5220,23 +5304,23 @@ void CWriter::Write(const UnaryExpr& expr) {
       break;
 
     case Opcode::I64X2Bitmask:
-      WriteSimpleUnaryExpr(expr.opcode, "simde_wasm_i64x2_bitmask");
+      WriteSimpleUnaryExpr(expr.opcode, "v128_i64x2_bitmask");
       break;
 
     case Opcode::I64X2ExtendHighI32X4S:
-      WriteSimpleUnaryExpr(expr.opcode, "simde_wasm_i64x2_extend_high_i32x4");
+      WriteSimpleUnaryExpr(expr.opcode, "v128_i64x2_extend_high_i32x4");
       break;
 
     case Opcode::I64X2ExtendHighI32X4U:
-      WriteSimpleUnaryExpr(expr.opcode, "simde_wasm_u64x2_extend_high_u32x4");
+      WriteSimpleUnaryExpr(expr.opcode, "v128_u64x2_extend_high_u32x4");
       break;
 
     case Opcode::I64X2ExtendLowI32X4S:
-      WriteSimpleUnaryExpr(expr.opcode, "simde_wasm_i64x2_extend_low_i32x4");
+      WriteSimpleUnaryExpr(expr.opcode, "v128_i64x2_extend_low_i32x4");
       break;
 
     case Opcode::I64X2ExtendLowI32X4U:
-      WriteSimpleUnaryExpr(expr.opcode, "simde_wasm_u64x2_extend_low_u32x4");
+      WriteSimpleUnaryExpr(expr.opcode, "v128_u64x2_extend_low_u32x4");
       break;
 
     case Opcode::I64X2Neg:
@@ -5344,85 +5428,85 @@ void CWriter::Write(const SimdLaneOpExpr& expr) {
 
   switch (expr.opcode) {
     case Opcode::I8X16ExtractLaneS: {
-      Write(StackVar(0, result_type), " = simde_wasm_i8x16_extract_lane(",
+      Write(StackVar(0, result_type), " = v128_i8x16_extract_lane(",
             StackVar(0), ", ", expr.val, ");", Newline());
       DropTypes(1);
       break;
     }
     case Opcode::I8X16ExtractLaneU: {
-      Write(StackVar(0, result_type), " = simde_wasm_u8x16_extract_lane(",
+      Write(StackVar(0, result_type), " = v128_u8x16_extract_lane(",
             StackVar(0), ", ", expr.val, ");", Newline());
       DropTypes(1);
       break;
     }
     case Opcode::I16X8ExtractLaneS: {
-      Write(StackVar(0, result_type), " = simde_wasm_i16x8_extract_lane(",
+      Write(StackVar(0, result_type), " = v128_i16x8_extract_lane(",
             StackVar(0), ", ", expr.val, ");", Newline());
       DropTypes(1);
       break;
     }
     case Opcode::I16X8ExtractLaneU: {
-      Write(StackVar(0, result_type), " = simde_wasm_u16x8_extract_lane(",
+      Write(StackVar(0, result_type), " = v128_u16x8_extract_lane(",
             StackVar(0), ", ", expr.val, ");", Newline());
       DropTypes(1);
       break;
     }
     case Opcode::I32X4ExtractLane: {
-      Write(StackVar(0, result_type), " = simde_wasm_i32x4_extract_lane(",
+      Write(StackVar(0, result_type), " = v128_i32x4_extract_lane(",
             StackVar(0), ", ", expr.val, ");", Newline());
       DropTypes(1);
       break;
     }
     case Opcode::I64X2ExtractLane: {
-      Write(StackVar(0, result_type), " = simde_wasm_i64x2_extract_lane(",
+      Write(StackVar(0, result_type), " = v128_i64x2_extract_lane(",
             StackVar(0), ", ", expr.val, ");", Newline());
       DropTypes(1);
       break;
     }
     case Opcode::F32X4ExtractLane: {
-      Write(StackVar(0, result_type), " = simde_wasm_f32x4_extract_lane(",
+      Write(StackVar(0, result_type), " = v128_f32x4_extract_lane(",
             StackVar(0), ", ", expr.val, ");", Newline());
       DropTypes(1);
       break;
     }
     case Opcode::F64X2ExtractLane: {
-      Write(StackVar(0, result_type), " = simde_wasm_f64x2_extract_lane(",
+      Write(StackVar(0, result_type), " = v128_f64x2_extract_lane(",
             StackVar(0), ", ", expr.val, ");", Newline());
       DropTypes(1);
       break;
     }
     case Opcode::I8X16ReplaceLane: {
-      Write(StackVar(1, result_type), " = simde_wasm_i8x16_replace_lane(",
+      Write(StackVar(1, result_type), " = v128_i8x16_replace_lane(",
             StackVar(1), ", ", expr.val, ", ", StackVar(0), ");", Newline());
       DropTypes(2);
       break;
     }
     case Opcode::I16X8ReplaceLane: {
-      Write(StackVar(1, result_type), " = simde_wasm_i16x8_replace_lane(",
+      Write(StackVar(1, result_type), " = v128_i16x8_replace_lane(",
             StackVar(1), ", ", expr.val, ", ", StackVar(0), ");", Newline());
       DropTypes(2);
       break;
     }
     case Opcode::I32X4ReplaceLane: {
-      Write(StackVar(1, result_type), " = simde_wasm_i32x4_replace_lane(",
+      Write(StackVar(1, result_type), " = v128_i32x4_replace_lane(",
             StackVar(1), ", ", expr.val, ", ", StackVar(0), ");", Newline());
       DropTypes(2);
       break;
     }
     case Opcode::I64X2ReplaceLane: {
-      Write(StackVar(1, result_type), " = simde_wasm_i64x2_replace_lane(",
+      Write(StackVar(1, result_type), " = v128_i64x2_replace_lane(",
             StackVar(1), ", ", expr.val, ", ", StackVar(0), ");", Newline());
       DropTypes(2);
       break;
     }
     case Opcode::F32X4ReplaceLane: {
-      Write(StackVar(1, result_type), " = simde_wasm_f32x4_replace_lane(",
+      Write(StackVar(1, result_type), " = v128_f32x4_replace_lane(",
             StackVar(1), ", ", expr.val, ", ", StackVar(0), ");", Newline());
       DropTypes(2);
       break;
     }
     case Opcode::F64X2ReplaceLane: {
-      Write(StackVar(1, result_type), " = simde_wasm_f64x2_replace_lane(",
+      Write(StackVar(1, result_type), " = v128_f64x2_replace_lane(",
             StackVar(1), ", ", expr.val, ", ", StackVar(0), ");", Newline());
       DropTypes(2);
       break;
@@ -5491,14 +5575,12 @@ void CWriter::Write(const SimdShuffleOpExpr& expr) {
   Type result_type = expr.opcode.GetResultType();
   switch (expr.opcode) {
     case Opcode::I8X16Shuffle: {
-      Write(StackVar(1, result_type), " = simde_wasm_i8x16_shuffle(",
-            StackVar(1), ", ", StackVar(0), ", ", expr.val.u8(0), ", ",
-            expr.val.u8(1), ", ", expr.val.u8(2), ", ", expr.val.u8(3), ", ",
-            expr.val.u8(4), ", ", expr.val.u8(5), ", ", expr.val.u8(6), ", ",
-            expr.val.u8(7), ", ", expr.val.u8(8), ", ", expr.val.u8(9), ", ",
-            expr.val.u8(10), ", ", expr.val.u8(11), ", ", expr.val.u8(12), ", ",
-            expr.val.u8(13), ", ", expr.val.u8(14), ", ", expr.val.u8(15), ");",
-            Newline());
+      Write(StackVar(1, result_type), " = v128_i8x16_shuffle(", StackVar(1),
+            ", ", StackVar(0));
+      for (int i = 0; i < 16; i++) {
+        Write(", ", expr.val.u8(i));
+      }
+      Write(");", Newline());
       DropTypes(2);
       break;
     }
@@ -5560,7 +5642,7 @@ void CWriter::Write(const LoadZeroExpr& expr) {
 }
 
 void CWriter::Write(const AtomicLoadExpr& expr) {
-  const char* func = nullptr;
+  std::string func;
   // clang-format off
   switch (expr.opcode) {
     case Opcode::I32AtomicLoad: func = "i32_atomic_load"; break;
@@ -5577,6 +5659,7 @@ void CWriter::Write(const AtomicLoadExpr& expr) {
   // clang-format on
 
   Memory* memory = module_->memories[module_->GetMemoryIndex(expr.memidx)];
+  func = GetMemoryAPIString(*memory, func);
 
   Type result_type = expr.opcode.GetResultType();
   Write(StackVar(0, result_type), " = ", func, "(",
@@ -5590,7 +5673,7 @@ void CWriter::Write(const AtomicLoadExpr& expr) {
 }
 
 void CWriter::Write(const AtomicStoreExpr& expr) {
-  const char* func = nullptr;
+  std::string func;
   // clang-format off
   switch (expr.opcode) {
     case Opcode::I32AtomicStore: func = "i32_atomic_store"; break;
@@ -5607,6 +5690,7 @@ void CWriter::Write(const AtomicStoreExpr& expr) {
   // clang-format on
 
   Memory* memory = module_->memories[module_->GetMemoryIndex(expr.memidx)];
+  func = GetMemoryAPIString(*memory, func);
 
   Write(func, "(", ExternalInstancePtr(ModuleFieldType::Memory, memory->name),
         ", (u64)(", StackVar(1), ")");
@@ -5617,7 +5701,7 @@ void CWriter::Write(const AtomicStoreExpr& expr) {
 }
 
 void CWriter::Write(const AtomicRmwExpr& expr) {
-  const char* func = nullptr;
+  std::string func;
   // clang-format off
   switch (expr.opcode) {
     case Opcode::I32AtomicRmwAdd: func = "i32_atomic_rmw_add"; break;
@@ -5668,6 +5752,8 @@ void CWriter::Write(const AtomicRmwExpr& expr) {
   // clang-format on
 
   Memory* memory = module_->memories[module_->GetMemoryIndex(expr.memidx)];
+  func = GetMemoryAPIString(*memory, func);
+
   Type result_type = expr.opcode.GetResultType();
 
   Write(StackVar(1, result_type), " = ", func, "(",
@@ -5681,7 +5767,7 @@ void CWriter::Write(const AtomicRmwExpr& expr) {
 }
 
 void CWriter::Write(const AtomicRmwCmpxchgExpr& expr) {
-  const char* func = nullptr;
+  std::string func;
   // clang-format off
   switch(expr.opcode) {
     case Opcode::I32AtomicRmwCmpxchg: func = "i32_atomic_rmw_cmpxchg"; break;
@@ -5697,6 +5783,8 @@ void CWriter::Write(const AtomicRmwCmpxchgExpr& expr) {
   // clang-format on
 
   Memory* memory = module_->memories[module_->GetMemoryIndex(expr.memidx)];
+  func = GetMemoryAPIString(*memory, func);
+
   Type result_type = expr.opcode.GetResultType();
 
   Write(StackVar(2, result_type), " = ", func, "(",

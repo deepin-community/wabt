@@ -1,8 +1,113 @@
 const char* s_source_declarations = R"w2c_template(
+// Computes a pointer to an object of the given size in a little-endian memory.
+)w2c_template"
+R"w2c_template(//
+)w2c_template"
+R"w2c_template(// On a little-endian host, this is just &mem->data[addr] - the object's size is
+)w2c_template"
+R"w2c_template(// unused. On a big-endian host, it's &mem->data[mem->size - addr - n], where n
+)w2c_template"
+R"w2c_template(// is the object's size.
+)w2c_template"
+R"w2c_template(//
+)w2c_template"
+R"w2c_template(// Note that mem may be evaluated multiple times.
+)w2c_template"
+R"w2c_template(//
+)w2c_template"
+R"w2c_template(// Parameters:
+)w2c_template"
+R"w2c_template(// mem - The memory.
+)w2c_template"
+R"w2c_template(// addr - The address.
+)w2c_template"
+R"w2c_template(// n - The size of the object.
+)w2c_template"
+R"w2c_template(//
+)w2c_template"
+R"w2c_template(// Result:
+)w2c_template"
+R"w2c_template(// A pointer for an object of size n.
+)w2c_template"
+R"w2c_template(#if WABT_BIG_ENDIAN
+)w2c_template"
+R"w2c_template(#define MEM_ADDR(mem, addr, n) &(mem)->data[(mem)->size - (addr) - (n)]
+)w2c_template"
+R"w2c_template(#else
+)w2c_template"
+R"w2c_template(#define MEM_ADDR(mem, addr, n) &(mem)->data[addr]
+)w2c_template"
+R"w2c_template(#endif
+)w2c_template"
+R"w2c_template(
+#ifndef WASM_RT_USE_SEGUE
+)w2c_template"
+R"w2c_template(// Memory functions can use the segue optimization if allowed. The segue
+)w2c_template"
+R"w2c_template(// optimization uses x86 segments to point to a linear memory. We use this
+)w2c_template"
+R"w2c_template(// optimization when:
+)w2c_template"
+R"w2c_template(//
+)w2c_template"
+R"w2c_template(// (1) Segue is allowed using WASM_RT_ALLOW_SEGUE
+)w2c_template"
+R"w2c_template(// (2) on x86_64 without WABT_BIG_ENDIAN enabled
+)w2c_template"
+R"w2c_template(// (3) the Wasm module uses a single unshared imported or exported memory
+)w2c_template"
+R"w2c_template(// (4) the compiler supports: intrinsics for (rd|wr)gsbase, "address namespaces"
+)w2c_template"
+R"w2c_template(//     for accessing pointers, and supports memcpy on pointers with custom
+)w2c_template"
+R"w2c_template(//     "address namespaces". GCC does not support the memcpy requirement, so
+)w2c_template"
+R"w2c_template(//     this leaves only clang for now.
+)w2c_template"
+R"w2c_template(// (5) The OS doesn't replace the segment register on context switch which
+)w2c_template"
+R"w2c_template(//     eliminates windows for now
+)w2c_template"
+R"w2c_template(#if WASM_RT_ALLOW_SEGUE && !WABT_BIG_ENDIAN &&                               \
+)w2c_template"
+R"w2c_template(    (defined(__x86_64__) || defined(_M_X64)) && IS_SINGLE_UNSHARED_MEMORY && \
+)w2c_template"
+R"w2c_template(    __clang__ && __has_builtin(__builtin_ia32_wrgsbase64) && !defined(_WIN32)
+)w2c_template"
+R"w2c_template(#define WASM_RT_USE_SEGUE 1
+)w2c_template"
+R"w2c_template(#else
+)w2c_template"
+R"w2c_template(#define WASM_RT_USE_SEGUE 0
+)w2c_template"
+R"w2c_template(#endif
+)w2c_template"
+R"w2c_template(#endif
+)w2c_template"
+R"w2c_template(
+#if WASM_RT_USE_SEGUE
+)w2c_template"
+R"w2c_template(// POSIX uses FS for TLS, GS is free
+)w2c_template"
+R"w2c_template(#define WASM_RT_SEGUE_READ_BASE() __builtin_ia32_rdgsbase64()
+)w2c_template"
+R"w2c_template(#define WASM_RT_SEGUE_WRITE_BASE(base) \
+)w2c_template"
+R"w2c_template(  __builtin_ia32_wrgsbase64((uintptr_t)base)
+)w2c_template"
+R"w2c_template(#define MEM_ADDR_MEMOP(mem, addr, n) ((uint8_t __seg_gs*)(uintptr_t)addr)
+)w2c_template"
+R"w2c_template(#else
+)w2c_template"
+R"w2c_template(#define MEM_ADDR_MEMOP(mem, addr, n) MEM_ADDR(mem, addr, n)
+)w2c_template"
+R"w2c_template(#endif
+)w2c_template"
+R"w2c_template(
 #define TRAP(x) (wasm_rt_trap(WASM_RT_TRAP_##x), 0)
 )w2c_template"
 R"w2c_template(
-#if WASM_RT_USE_STACK_DEPTH_COUNT
+#if WASM_RT_STACK_DEPTH_COUNT
 )w2c_template"
 R"w2c_template(#define FUNC_PROLOGUE                                            \
 )w2c_template"
@@ -83,13 +188,38 @@ R"w2c_template(    TRAP(OOB);
 R"w2c_template(#endif
 )w2c_template"
 R"w2c_template(
-#if WASM_RT_MEMCHECK_GUARD_PAGES
+#if WASM_RT_USE_SEGUE && WASM_RT_SANITY_CHECKS
 )w2c_template"
-R"w2c_template(#define MEMCHECK(mem, a, t)
+R"w2c_template(#include <stdio.h>
+)w2c_template"
+R"w2c_template(#define WASM_RT_CHECK_BASE(mem)                                               \
+)w2c_template"
+R"w2c_template(  if (((uintptr_t)((mem)->data)) != ((uintptr_t)WASM_RT_SEGUE_READ_BASE())) { \
+)w2c_template"
+R"w2c_template(    puts("Segment register mismatch\n");                                      \
+)w2c_template"
+R"w2c_template(    abort();                                                                  \
+)w2c_template"
+R"w2c_template(  }
 )w2c_template"
 R"w2c_template(#else
 )w2c_template"
-R"w2c_template(#define MEMCHECK(mem, a, t) RANGE_CHECK(mem, a, sizeof(t))
+R"w2c_template(#define WASM_RT_CHECK_BASE(mem)
+)w2c_template"
+R"w2c_template(#endif
+)w2c_template"
+R"w2c_template(
+#if WASM_RT_MEMCHECK_GUARD_PAGES
+)w2c_template"
+R"w2c_template(#define MEMCHECK(mem, a, t) WASM_RT_CHECK_BASE(mem);
+)w2c_template"
+R"w2c_template(#else
+)w2c_template"
+R"w2c_template(#define MEMCHECK(mem, a, t) \
+)w2c_template"
+R"w2c_template(  WASM_RT_CHECK_BASE(mem);  \
+)w2c_template"
+R"w2c_template(  RANGE_CHECK(mem, a, sizeof(t))
 )w2c_template"
 R"w2c_template(#endif
 )w2c_template"
@@ -123,9 +253,7 @@ R"w2c_template(#define FORCE_READ_FLOAT(var)
 R"w2c_template(#endif
 )w2c_template"
 R"w2c_template(
-#if WABT_BIG_ENDIAN
-)w2c_template"
-R"w2c_template(static inline void load_data(void* dest, const void* src, size_t n) {
+static inline void load_data(void* dest, const void* src, size_t n) {
 )w2c_template"
 R"w2c_template(  if (!n) {
 )w2c_template"
@@ -133,13 +261,13 @@ R"w2c_template(    return;
 )w2c_template"
 R"w2c_template(  }
 )w2c_template"
-R"w2c_template(  size_t i = 0;
+R"w2c_template(  wasm_rt_memcpy(dest, src, n);
+)w2c_template"
+R"w2c_template(#if WABT_BIG_ENDIAN
 )w2c_template"
 R"w2c_template(  u8* dest_chars = dest;
 )w2c_template"
-R"w2c_template(  wasm_rt_memcpy(dest, src, n);
-)w2c_template"
-R"w2c_template(  for (i = 0; i < (n >> 1); i++) {
+R"w2c_template(  for (size_t i = 0; i < (n >> 1); i++) {
 )w2c_template"
 R"w2c_template(    u8 cursor = dest_chars[i];
 )w2c_template"
@@ -149,88 +277,37 @@ R"w2c_template(    dest_chars[n - i - 1] = cursor;
 )w2c_template"
 R"w2c_template(  }
 )w2c_template"
+R"w2c_template(#endif
+)w2c_template"
 R"w2c_template(}
-)w2c_template"
-R"w2c_template(#define LOAD_DATA(m, o, i, s)                   \
-)w2c_template"
-R"w2c_template(  do {                                          \
-)w2c_template"
-R"w2c_template(    RANGE_CHECK((&m), m.size - o - s, s);       \
-)w2c_template"
-R"w2c_template(    load_data(&(m.data[m.size - o - s]), i, s); \
-)w2c_template"
-R"w2c_template(  } while (0)
-)w2c_template"
-R"w2c_template(#define DEFINE_LOAD(name, t1, t2, t3, force_read)                      \
-)w2c_template"
-R"w2c_template(  static inline t3 name(wasm_rt_memory_t* mem, u64 addr) {             \
-)w2c_template"
-R"w2c_template(    MEMCHECK(mem, addr, t1);                                           \
-)w2c_template"
-R"w2c_template(    t1 result;                                                         \
-)w2c_template"
-R"w2c_template(    wasm_rt_memcpy(&result, &mem->data[mem->size - addr - sizeof(t1)], \
-)w2c_template"
-R"w2c_template(                   sizeof(t1));                                        \
-)w2c_template"
-R"w2c_template(    force_read(result);                                                \
-)w2c_template"
-R"w2c_template(    return (t3)(t2)result;                                             \
-)w2c_template"
-R"w2c_template(  }
 )w2c_template"
 R"w2c_template(
-#define DEFINE_STORE(name, t1, t2)                                      \
+#define LOAD_DATA(m, o, i, s)            \
 )w2c_template"
-R"w2c_template(  static inline void name(wasm_rt_memory_t* mem, u64 addr, t2 value) {  \
+R"w2c_template(  do {                                   \
 )w2c_template"
-R"w2c_template(    MEMCHECK(mem, addr, t1);                                            \
+R"w2c_template(    RANGE_CHECK((&m), o, s);             \
 )w2c_template"
-R"w2c_template(    t1 wrapped = (t1)value;                                             \
-)w2c_template"
-R"w2c_template(    wasm_rt_memcpy(&mem->data[mem->size - addr - sizeof(t1)], &wrapped, \
-)w2c_template"
-R"w2c_template(                   sizeof(t1));                                         \
-)w2c_template"
-R"w2c_template(  }
-)w2c_template"
-R"w2c_template(#else
-)w2c_template"
-R"w2c_template(static inline void load_data(void* dest, const void* src, size_t n) {
-)w2c_template"
-R"w2c_template(  if (!n) {
-)w2c_template"
-R"w2c_template(    return;
-)w2c_template"
-R"w2c_template(  }
-)w2c_template"
-R"w2c_template(  wasm_rt_memcpy(dest, src, n);
-)w2c_template"
-R"w2c_template(}
-)w2c_template"
-R"w2c_template(#define LOAD_DATA(m, o, i, s)      \
-)w2c_template"
-R"w2c_template(  do {                             \
-)w2c_template"
-R"w2c_template(    RANGE_CHECK((&m), o, s);       \
-)w2c_template"
-R"w2c_template(    load_data(&(m.data[o]), i, s); \
+R"w2c_template(    load_data(MEM_ADDR(&m, o, s), i, s); \
 )w2c_template"
 R"w2c_template(  } while (0)
 )w2c_template"
-R"w2c_template(#define DEFINE_LOAD(name, t1, t2, t3, force_read)          \
+R"w2c_template(
+#define DEFINE_LOAD(name, t1, t2, t3, force_read)                  \
 )w2c_template"
-R"w2c_template(  static inline t3 name(wasm_rt_memory_t* mem, u64 addr) { \
+R"w2c_template(  static inline t3 name(wasm_rt_memory_t* mem, u64 addr) {         \
 )w2c_template"
-R"w2c_template(    MEMCHECK(mem, addr, t1);                               \
+R"w2c_template(    MEMCHECK(mem, addr, t1);                                       \
 )w2c_template"
-R"w2c_template(    t1 result;                                             \
+R"w2c_template(    t1 result;                                                     \
 )w2c_template"
-R"w2c_template(    wasm_rt_memcpy(&result, &mem->data[addr], sizeof(t1)); \
+R"w2c_template(    wasm_rt_memcpy(&result, MEM_ADDR_MEMOP(mem, addr, sizeof(t1)), \
 )w2c_template"
-R"w2c_template(    force_read(result);                                    \
+R"w2c_template(                   sizeof(t1));                                    \
 )w2c_template"
-R"w2c_template(    return (t3)(t2)result;                                 \
+R"w2c_template(    force_read(result);                                            \
+)w2c_template"
+R"w2c_template(    return (t3)(t2)result;                                         \
 )w2c_template"
 R"w2c_template(  }
 )w2c_template"
@@ -243,11 +320,11 @@ R"w2c_template(    MEMCHECK(mem, addr, t1);                                     
 )w2c_template"
 R"w2c_template(    t1 wrapped = (t1)value;                                            \
 )w2c_template"
-R"w2c_template(    wasm_rt_memcpy(&mem->data[addr], &wrapped, sizeof(t1));            \
+R"w2c_template(    wasm_rt_memcpy(MEM_ADDR_MEMOP(mem, addr, sizeof(t1)), &wrapped,    \
+)w2c_template"
+R"w2c_template(                   sizeof(t1));                                        \
 )w2c_template"
 R"w2c_template(  }
-)w2c_template"
-R"w2c_template(#endif
 )w2c_template"
 R"w2c_template(
 DEFINE_LOAD(i32_load, u32, u32, u32, FORCE_READ_INT)
@@ -897,7 +974,7 @@ static inline void memory_fill(wasm_rt_memory_t* mem, u32 d, u32 val, u32 n) {
 )w2c_template"
 R"w2c_template(  RANGE_CHECK(mem, d, n);
 )w2c_template"
-R"w2c_template(  memset(mem->data + d, val, n);
+R"w2c_template(  memset(MEM_ADDR(mem, d, n), val, n);
 )w2c_template"
 R"w2c_template(}
 )w2c_template"
@@ -916,7 +993,7 @@ R"w2c_template(  RANGE_CHECK(dest, dest_addr, n);
 )w2c_template"
 R"w2c_template(  RANGE_CHECK(src, src_addr, n);
 )w2c_template"
-R"w2c_template(  memmove(dest->data + dest_addr, src->data + src_addr, n);
+R"w2c_template(  memmove(MEM_ADDR(dest, dest_addr, n), MEM_ADDR(src, src_addr, n), n);
 )w2c_template"
 R"w2c_template(}
 )w2c_template"

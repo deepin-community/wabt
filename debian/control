@@ -2,16 +2,18 @@ Source: wabt
 Section: devel
 Priority: optional
 Maintainer: Debian Javascript Maintainers <pkg-javascript-devel@lists.alioth.debian.org>
-Uploaders: Markus Koschany <apo@debian.org>
- , Bastien Roucariès <rouca@debian.org>
+Uploaders: Bastien Roucariès <rouca@debian.org>
  , Yadd <yadd@debian.org>
 Build-Depends: debhelper-compat (= 13)
  , cmake
  , dh-nodejs
- , emscripten
+ , emscripten (>= 3.1.69~)
+ , googletest
+ , libsimde-dev
  , libssl-dev
  , ninja-build
  , python3
+ , python3-ply
  , re2c
 Standards-Version: 4.6.2
 Homepage: https://github.com/WebAssembly/wabt

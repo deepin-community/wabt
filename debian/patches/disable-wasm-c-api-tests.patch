@@ -1,0 +1,37 @@
+Description: c-api-tests need WebAssembly/testsuite and cannot be disabled without a patch
+Author: Jérémy Lal <kapouer@melix.org>
+Last-Update: 2025-02-13
+Forwarded: not-needed
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -745,7 +745,7 @@
+     USES_TERMINAL
+   )
+ 
+-  add_custom_target(check DEPENDS run-unittests run-tests run-c-api-tests)
++  add_custom_target(check DEPENDS run-unittests run-tests)
+ 
+   function(c_api_example NAME)
+     set(EXENAME wasm-c-api-${NAME})
+@@ -767,21 +767,6 @@
+     add_dependencies(run-c-api-tests ${EXENAME})
+   endfunction()
+ 
+-  c_api_example(callback)
+-  c_api_example(finalize)
+-  c_api_example(global)
+-  c_api_example(hello)
+-  c_api_example(hostref)
+-  c_api_example(multi)
+-  c_api_example(memory)
+-  c_api_example(reflect)
+-  c_api_example(serialize)
+-  c_api_example(start)
+-  c_api_example(table)
+-  c_api_example(trap)
+-  if (CMAKE_USE_PTHREADS_INIT)
+-    c_api_example(threads)
+-  endif ()
+ endif ()
+ 
+ # install

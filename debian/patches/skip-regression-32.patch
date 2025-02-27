@@ -1,0 +1,13 @@
+Description: test won't pass on 32-bit
+Forwarded: https://github.com/WebAssembly/wabt/issues/1044
+Last-Update: 2025-02-17
+Author: Jérémy Lal <kapouer@melix.org>
+--- a/test/regress/empty-quoted-module.txt
++++ b/test/regress/empty-quoted-module.txt
+@@ -1,5 +1,5 @@
+ ;;; TOOL: wat2wasm
+-;;; ERROR: 1
++;;; SKIP: 1
+ (module quote "")
+ (;; STDERR ;;;
+ out/test/regress/empty-quoted-module.txt:3:2: error: error in quoted module: @0x100000001: empty module

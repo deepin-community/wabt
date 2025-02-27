@@ -24,6 +24,7 @@ import re
 import struct
 import sys
 import shlex
+import subprocess
 
 import find_exe
 import utils
@@ -84,7 +85,7 @@ def F64ToC(f64_bits):
     elif f64_bits == F64_SIGN_BIT:
         return '-0.0'
     else:
-        return '%#.17gL' % ReinterpretF64(f64_bits)
+        return '%#.17g' % ReinterpretF64(f64_bits)
 
 
 def MangleType(t):
@@ -234,7 +235,7 @@ class CWriter(object):
             self.commands.insert(0, dummy_command)
 
     def _WriteFileAndLine(self, command):
-        self.out_file.write('// %s:%d\n' % (self.source_filename, command['line']))
+        self.out_file.write('#line {line:d} "{name:s}"\n'.format(name=self.source_filename, line=command['line']))
 
     def _WriteIncludes(self):
         idx = 0
@@ -373,7 +374,7 @@ class CWriter(object):
                 return '"(f64 %s)"' % value
             return F64ToC(int(value))
         elif type_ == 'v128':
-            return 'simde_wasm_' + const['lane_type'] + 'x' + str(len(const['value'])) + '_make(' + ','.join([self._Constant({'type': const['lane_type'], 'value': x}) for x in value]) + ')'
+            return 'v128_' + const['lane_type'] + 'x' + str(len(const['value'])) + '_make(' + ','.join([self._Constant({'type': const['lane_type'], 'value': x}) for x in value]) + ')'
         elif type_ == 'externref':
             if value == 'null':
                 return 'wasm_rt_externref_null_value'
@@ -408,7 +409,7 @@ class CWriter(object):
         return ', '.join(self._Constant({'type': const['lane_type'], 'value': val}) for val in const['value'])
 
     def _SIMDFound(self, num, lane_type, lane_count):
-        return 'simde_wasm_%sx%d_extract_lane(actual, %d)' % (lane_type, lane_count, num)
+        return 'v128_%sx%d_extract_lane(actual, %d)' % (lane_type, lane_count, num)
 
     def _SIMDFoundList(self, lane_type, lane_count):
         return ', '.join(self._SIMDFound(num, lane_type, lane_count) for num in range(lane_count))
@@ -444,29 +445,38 @@ class CWriter(object):
             raise Error('Unexpected action type: %s' % type_)
 
 
-def Compile(cc, c_filename, out_dir, *cflags):
+def Compile(cc, c_filename, out_dir, use_c11, *cflags):
     if IS_WINDOWS:
         ext = '.obj'
     else:
         ext = '.o'
     o_filename = utils.ChangeDir(utils.ChangeExt(c_filename, ext), out_dir)
     args = list(cflags)
+
     if IS_WINDOWS:
-        args += ['/nologo', '/MDd', '/c', c_filename, '/Fo' + o_filename]
+        cstd_flag = ['/std:c11', '/experimental:c11atomics'] if use_c11 else []
+        args += cstd_flag + ['/nologo', '/MDd', '/c', c_filename, '/Fo' + o_filename]
     else:
         # See "Compiling the wasm2c output" section of wasm2c/README.md
         # When compiling with -O2, GCC and clang require '-fno-optimize-sibling-calls'
         # and '-frounding-math' to maintain conformance with the spec tests
         # (GCC also requires '-fsignaling-nans')
+        if use_c11:
+            args.append('-std=c11')
+        else:
+            args.append('-std=c99')
         args += ['-c', c_filename, '-o', o_filename, '-O2',
                  '-Wall', '-Werror', '-Wno-unused',
                  '-Wno-array-bounds',
                  '-Wno-ignored-optimization-argument',
                  '-Wno-tautological-constant-out-of-range-compare',
                  '-Wno-infinite-recursion',
+                 # simde calls for pragma clang loop vectorize(enable),
+                 # which can generate warnings if the optimization pass fails.
+                 '-Wno-pass-failed',
                  '-fno-optimize-sibling-calls',
                  '-frounding-math', '-fsignaling-nans',
-                 '-std=c99', '-D_DEFAULT_SOURCE']
+                 '-D_DEFAULT_SOURCE']
     # Use RunWithArgsForStdout and discard stdout because cl.exe
     # unconditionally prints the name of input files on stdout
     # and we don't want that to be part of our stdout.
@@ -601,6 +611,8 @@ def main(args):
                 return SKIPPED
             cflags.append('-DSUPPORT_MEMORY64=1')
 
+        use_c11 = options.enable_threads
+
         for i, wasm_filename in enumerate(cwriter.GetModuleFilenames()):
             wasm_filename = os.path.join(out_dir, wasm_filename)
             c_filename_input = utils.ChangeExt(wasm_filename, '.c')
@@ -615,7 +627,7 @@ def main(args):
             wasm2c.RunWithArgs(wasm_filename, '-o', c_filename_input, *args)
             if options.compile:
                 for j, c_filename in enumerate(c_filenames):
-                    o_filenames.append(Compile(cc, c_filename, out_dir, *cflags))
+                    o_filenames.append(Compile(cc, c_filename, out_dir, use_c11, *cflags))
 
         cwriter.Write()
         main_filename = utils.ChangeExt(json_file_path, '-main.c')
@@ -623,16 +635,17 @@ def main(args):
             out_main_file.write(output.getvalue())
 
         if options.compile:
-            # Compile wasm-rt-impl.
-            wasm_rt_impl_c = os.path.join(options.wasmrt_dir, 'wasm-rt-impl.c')
-            o_filenames.append(Compile(cc, wasm_rt_impl_c, out_dir, *cflags))
+            # Compile runtime code
+            source_files = [
+                main_filename,
+                os.path.join(options.wasmrt_dir, 'wasm-rt-impl.c'),
+                os.path.join(options.wasmrt_dir, 'wasm-rt-exceptions-impl.c'),
+                os.path.join(options.wasmrt_dir, 'wasm-rt-mem-impl.c'),
+            ]
 
-            # Compile wasm-rt-exceptions.
-            wasm_rt_exceptions_c = os.path.join(options.wasmrt_dir, 'wasm-rt-exceptions-impl.c')
-            o_filenames.append(Compile(cc, wasm_rt_exceptions_c, out_dir, *cflags))
+            for f in source_files:
+                o_filenames.append(Compile(cc, f, out_dir, use_c11, *cflags))
 
-            # Compile and link -main test run entry point
-            o_filenames.append(Compile(cc, main_filename, out_dir, *cflags))
             if IS_WINDOWS:
                 exe_ext = '.exe'
                 libs = []
@@ -644,8 +657,7 @@ def main(args):
 
             # Run the resulting binary
             if options.run:
-                utils.Executable(main_exe, forward_stdout=True).RunWithArgs()
-
+                return subprocess.run([main_exe]).returncode
     return 0
 
 

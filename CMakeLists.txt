@@ -15,7 +15,7 @@
 #
 
 cmake_minimum_required(VERSION 3.16)
-project(WABT LANGUAGES C CXX VERSION 1.0.34)
+project(WABT LANGUAGES C CXX VERSION 1.0.36)
 
 include(GNUInstallDirs)
 
@@ -423,9 +423,10 @@ if (WABT_INSTALL_RULES)
 endif ()
 
 if (HAVE_SETJMP_H)
-  set(WASM_RT_FILES "wasm2c/wasm-rt-impl.h" "wasm2c/wasm-rt-impl.c" "wasm2c/wasm-rt-exceptions-impl.c")
+  set(WASM_RT_FILES "wasm2c/wasm-rt-impl.h" "wasm2c/wasm-rt-impl.c" "wasm2c/wasm-rt-exceptions-impl.c" "wasm2c/wasm-rt-mem-impl.c")
 
   add_library(wasm-rt-impl STATIC ${WASM_RT_FILES})
+  target_link_libraries(wasm-rt-impl ${CMAKE_THREAD_LIBS_INIT})
   add_library(wabt::wasm-rt-impl ALIAS wasm-rt-impl)
   if (WABT_BIG_ENDIAN)
     target_compile_definitions(wasm-rt-impl PUBLIC WABT_BIG_ENDIAN=1)
@@ -572,7 +573,11 @@ if (BUILD_TOOLS)
   )
 
   if(WITH_WASI)
+    # uvwasi uses the deprecated FetchContent_Populate function, disable it to avoid build error
+    set(CMAKE_POLICY_DEFAULT_CMP0169_BACK ${CMAKE_POLICY_DEFAULT_CMP0169})
+    set(CMAKE_POLICY_DEFAULT_CMP0169 OLD)
     add_subdirectory("third_party/uvwasi" EXCLUDE_FROM_ALL)
+    set(CMAKE_POLICY_DEFAULT_CMP0169 ${CMAKE_POLICY_DEFAULT_CMP0169_BACK})
     include_directories(third_party/uvwasi/include)
     add_definitions(-DWITH_WASI)
     set(INTERP_LIBS uvwasi_a)
@@ -645,6 +650,10 @@ endif ()
 if (BUILD_TESTS)
   if (CMAKE_BUILD_TYPE STREQUAL "Debug")
     set(WASM2C_CFLAGS "${WASM2C_CFLAGS} -g -O0")
+  endif ()
+
+  if (WABT_BIG_ENDIAN)
+    set(WASM2C_CFLAGS "${WASM2C_CFLAGS} -DWABT_BIG_ENDIAN=1")
   endif ()
 
   if (DEFINED CMAKE_OSX_SYSROOT)
@@ -810,15 +819,16 @@ if (EMSCRIPTEN)
   set(EMSCRIPTEN_EXPORTS ${WABT_SOURCE_DIR}/src/emscripten-exports.txt)
 
   set(LIBWABT_LINK_FLAGS
-    -s SINGLE_FILE
     --post-js ${WABT_POST_JS}
-    -s EXPORTED_FUNCTIONS=\"@${EMSCRIPTEN_EXPORTS}\"
-    -s RESERVED_FUNCTION_POINTERS=10
-    -s NO_EXIT_RUNTIME=1
-    -s ALLOW_MEMORY_GROWTH=1
-    -s MODULARIZE=1
-    -s EXPORT_NAME=\"'WabtModule'\"
-    -s WASM=0
+    -sSINGLE_FILE
+    -sEXPORTED_FUNCTIONS=@${EMSCRIPTEN_EXPORTS}
+    -sRESERVED_FUNCTION_POINTERS=10
+    -sNO_EXIT_RUNTIME=1
+    -sALLOW_MEMORY_GROWTH=1
+    -sMODULARIZE=1
+    -sEXPORT_NAME=WabtModule
+    -sWASM=0
+    -sEXPORTED_RUNTIME_METHODS=writeAsciiToMemory
     -Oz
   )
   string(REPLACE ";" " " LIBWABT_LINK_FLAGS_STR "${LIBWABT_LINK_FLAGS}")
