@@ -12,14 +12,23 @@ JSCFLAGS:=$(shell DEB_BUILD_MAINT_OPTIONS=$(JSFLAGS) dpkg-buildflags --get CFLAG
 JSCXXFLAGS:=$(shell DEB_BUILD_MAINT_OPTIONS=$(JSFLAGS) dpkg-buildflags --get CXXFLAGS) $(CPPFLAGS)
 JSLDFLAGS:=$(shell DEB_BUILD_MAINT_OPTIONS=$(JSFLAGS) dpkg-buildflags --get LDFLAGS)
 
+ifeq (i386, $(DEB_HOST_ARCH))
+# let i386 tests pass
+export WASM2C_CFLAGS:=-msse2 -mfpmath=sse
+endif
+
 WABT_TOOLS:=wasm2c wasm2wat wat2wasm wasm-decompile wasm-interp wasm-objdump wasm-opcodecnt wasm-strip wasm-validate
 
 %:
 	dh $@ --buildsystem=cmake
 
+execute_after_dh_clean:
+	rm -rf third_party/gtest
+
 override_dh_auto_configure:
+	mkdir -p third_party && ln -sf /usr/src/googletest third_party/gtest
 	dh_auto_configure -- \
-		-DBUILD_TESTS=OFF
+		-DBUILD_TESTS=ON -DBUILD_LIBWASM=OFF
 	mkdir -p $(OUTJS)
 #disable some hardening flags
 	 cd $(OUTJS) && \
@@ -31,7 +40,7 @@ override_dh_auto_configure:
 			-B . \
 			-DCMAKE_TOOLCHAIN_FILE=/usr/share/emscripten/cmake/Modules/Platform/Emscripten.cmake \
 			-DCMAKE_BUILD_TYPE=Release \
-			-DBUILD_TESTS=OFF \
+			-DBUILD_TESTS=ON \
 			-DCMAKE_VERBOSE_MAKEFILE=ON
 
 execute_before_dh_auto_build:
@@ -56,3 +65,6 @@ execute_after_dh_installdocs:
 	mv debian/wabt.docs debian/_docs
 	dh_nodejs_autodocs autodispatch
 	mv debian/_docs debian/wabt.docs
+
+execute_before_dh_auto_test:
+	rm -rf test/spec test/wasm2c

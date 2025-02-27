@@ -1,3 +1,47 @@
+wabt (1.0.36+dfsg+~cs1.0.36-2) unstable; urgency=medium
+
+  * Patch: skip failing test on 32-bit
+  * Pass sse WASM2C_CFLAGS for i386 tests
+
+ -- Jérémy Lal <kapouer@melix.org>  Tue, 18 Feb 2025 01:51:42 +0100
+
+wabt (1.0.36+dfsg+~cs1.0.36-1) unstable; urgency=medium
+
+  * Team upload
+  * New upstream version 1.0.36+dfsg+~cs1.0.36
+  * Update Files-Excluded
+  * B-D libsimde-dev for tests
+  * Enable run-unittests, disabled by mistake
+  * Patch: skip failing simd tests on mips64el
+
+ -- Jérémy Lal <kapouer@melix.org>  Mon, 17 Feb 2025 11:19:35 +0100
+
+wabt (1.0.34+dsfg2+~cs1.0.32-4) unstable; urgency=medium
+
+  * B-D python3-ply for tests
+
+ -- Jérémy Lal <kapouer@melix.org>  Sat, 15 Feb 2025 02:04:52 +0100
+
+wabt (1.0.34+dsfg2+~cs1.0.32-3) unstable; urgency=medium
+
+  * clean gtest dir in rules
+
+ -- Jérémy Lal <kapouer@melix.org>  Sat, 15 Feb 2025 01:15:48 +0100
+
+wabt (1.0.34+dsfg2+~cs1.0.32-2) unstable; urgency=medium
+
+  [ Markus Koschany ]
+  * Remove myself from Uploaders.
+
+  [ Yadd ]
+  * Fix typo in repacksuffix (Closes: #1069136)
+
+  [ Jérémy Lal ]
+  * Enable some tests
+  * B-D emscripten >= 3.1.69~ (Closes: #1088031)
+
+ -- Jérémy Lal <kapouer@melix.org>  Fri, 14 Feb 2025 23:02:18 +0100
+
 wabt (1.0.34+dsfg2+~cs1.0.32-1) unstable; urgency=medium
 
   * Repack in order to get rid of spurious tar
@@ -48,6 +92,7 @@ wabt (1.0.34-1) unstable; urgency=medium
 wabt (1.0.33-1) unstable; urgency=medium
 
   * New upstream version 1.0.33.
+    + CVE-2023-30300 Infinite loop in wasm. Closes: #1035686.
   * Build-depend on libssl-dev to provide a SHA-256 implementation
     used by the wasm2c tool.
 

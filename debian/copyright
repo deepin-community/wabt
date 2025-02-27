@@ -8,7 +8,6 @@ Files-Excluded:
  docs/demo
  fuzz-in/wasm/stuff.wasm
  wasm2c/.gitignore
- wasm2c/examples/fac/fac.wasm
 Files-Excluded-node-wabt-js:
  bin/*
  tests/assembly/*.wasm

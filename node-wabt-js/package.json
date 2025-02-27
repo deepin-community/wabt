@@ -1,7 +1,7 @@
 {
   "name": "wabt",
   "description": "JavaScript version of WABT, The WebAssembly Binary Toolkit.",
-  "version": "1.0.32",
+  "version": "1.0.36",
   "license": "Apache-2.0",
   "repository": {
     "type": "git",
@@ -20,7 +20,7 @@
     "wasm-decompile": "bin/wasm-decompile",
     "wasm-interp": "bin/wasm-interp",
     "wasm-objdump": "bin/wasm-objdump",
-    "wasm-opcodecnt": "bin/wasm-opcodecnt",
+    "wasm-stats": "bin/wasm-stats",
     "wasm-strip": "bin/wasm-strip",
     "wasm-validate": "bin/wasm-validate"
   },
@@ -39,10 +39,10 @@
     "README.md"
   ],
   "devDependencies": {
-    "assemblyscript": "^0.12.3",
+    "assemblyscript": "^0.12.5",
     "dateformat": "^3.0.3",
-    "semver": "^7.3.2",
-    "simple-git": "^2.8.0",
-    "tape": "^5.0.1"
+    "semver": "^7.6.0",
+    "simple-git": "^3.24.0",
+    "tape": "^5.7.5"
   }
 }

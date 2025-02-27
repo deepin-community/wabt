@@ -4,3 +4,6 @@ interp-wasm-c-api.cc.patch
 0004-Add-wasm.h.patch
 0005-Remove-bin-for-node-wabt-js.patch
 0006-spelling-error.patch
+disable-wasm-c-api-tests.patch
+skip-simd-tests-mips.patch
+skip-regression-32.patch

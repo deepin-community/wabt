@@ -1,5 +1,6 @@
 name: Build
 on:
+  workflow_dispatch:
   schedule:
   - cron: '0 0 * * *'
   push:
@@ -7,12 +8,15 @@ on:
     - main
   pull_request:
 env:
-  WABT_TOOLS: wasm2c wasm2wat wat2wasm wasm-decompile wasm-interp wasm-objdump wasm-opcodecnt wasm-strip wasm-validate
+  WABT_TOOLS: wasm2c wasm2wat wat2wasm wasm-decompile wasm-interp wasm-objdump wasm-stats wasm-strip wasm-validate
 jobs:
   build:
     name: "Build with Emsdk"
     runs-on: ubuntu-latest
     if: github.event_name == 'schedule' || !contains(github.event.head_commit.message, '[ci skip]')
+    env:
+      MAKE_FLAGS: "-j2"
+      CMAKE_EXE_LINKER_FLAGS: "-sSINGLE_FILE"
     steps:
     - name: "Set up Emsdk"
       run: |
@@ -73,8 +77,8 @@ jobs:
         cd ./wabt/build
         source $HOME/emsdk/emsdk_env.sh
         emcc --version
-        emcmake cmake -DCMAKE_BUILD_TYPE=Release ..
-        emmake make libwabtjs
+        emcmake cmake -DCMAKE_BUILD_TYPE=Release -DCMAKE_EXE_LINKER_FLAGS="$CMAKE_EXE_LINKER_FLAGS" ..
+        emmake make $MAKEFLAGS libwabtjs
         cp ./libwabt.js ../../index.js
         cd ../..
     - name: "Test wabt.js"
@@ -87,7 +91,7 @@ jobs:
         source $HOME/emsdk/emsdk_env.sh
         emcc --version
         for tool in ${{ env.WABT_TOOLS }}; do
-          emmake make "$tool"
+          emmake make $MAKEFLAGS "$tool"
           echo '#!/usr/bin/env node' > "../../bin/$tool"
           cat "./$tool.js" >> "../../bin/$tool"
         done
