@@ -1,3 +1,12 @@
+wabt (1.0.36+dfsg+~cs1.0.36-2deepin1) unstable; urgency=medium
+
+  * Fix CVE-2023-46331: Out-of-Bound Memory Read in DataSegment::IsValidRange()
+    Backport upstream fix for handling data count without data section.
+  * Fix CVE-2023-46332: Out-of-Bound Memory Write in DataSegment::Drop()
+    Backport upstream fix for handling data count without data section.
+
+ -- deepin-ci-robot <packages@deepin.org>  Wed, 14 May 2026 20:30:00 +0800
+
 wabt (1.0.36+dfsg+~cs1.0.36-2) unstable; urgency=medium
 
   * Patch: skip failing test on 32-bit
