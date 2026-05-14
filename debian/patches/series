@@ -7,3 +7,4 @@ interp-wasm-c-api.cc.patch
 disable-wasm-c-api-tests.patch
 skip-simd-tests-mips.patch
 skip-regression-32.patch
+CVE-2023-46331-46332.patch
